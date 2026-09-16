@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "migrations*", "scripts*"]
+
+[project]
+name = "rag-platform"
+version = "0.1.0"
+description = "Reusable, configuration-driven RAG platform"
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    # ── Web framework ────────────────────────────────────────────────────────
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",   # file uploads
+
+    # ── Database ─────────────────────────────────────────────────────────────
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",            # async Postgres driver
+    "alembic>=1.14.0",
+
+    # ── Config / validation ──────────────────────────────────────────────────
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.1",
+
+    # ── Vector DB ────────────────────────────────────────────────────────────
+    "qdrant-client>=1.12.0",
+
+    # ── Embeddings — BGE-M3 (local) ──────────────────────────────────────────
+    "FlagEmbedding>=1.3.0",
+    "torch>=2.5.0",
+    "transformers>=4.46.0",
+
+    # ── Reranker — Jina v2 (local) ───────────────────────────────────────────
+    "einops>=0.8.0",              # required by jina reranker
+
+    # ── LLM — OpenAI-compatible ──────────────────────────────────────────────
+    "openai>=1.58.0",
+
+    # ── Document loaders ─────────────────────────────────────────────────────
+    "pymupdf>=1.24.0",            # PDF extraction (fitz)
+    "beautifulsoup4>=4.12.0",     # HTML parsing
+    "lxml>=5.3.0",                # HTML/XML parser backend
+    "markdown-it-py>=3.0.0",     # Markdown parsing
+    "chardet>=5.2.0",             # encoding detection
+
+    # ── Chunking ─────────────────────────────────────────────────────────────
+    "langchain-text-splitters>=0.3.0",
+    "tiktoken>=0.8.0",            # token counting
+
+    # ── Sparse retrieval (SPLADE via Qdrant built-in) ────────────────────────
+    "fastembed>=0.4.0",           # used to generate sparse SPLADE vectors
+
+    # ── Observability ────────────────────────────────────────────────────────
+    "langfuse>=2.55.0",
+
+    # ── Evaluation ───────────────────────────────────────────────────────────
+    "ragas>=0.2.0",
+    "datasets>=3.2.0",
+
+    # ── Utilities ────────────────────────────────────────────────────────────
+    "httpx>=0.28.0",
+    "anyio>=4.7.0",
+    "structlog>=24.4.0",
+    "tenacity>=9.0.0",           # retries
+    "slowapi>=0.1.9",            # rate limiting
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",             # TestClient
+    "factory-boy>=3.3.1",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
