@@ -48,22 +48,20 @@ class RAGASRunner:
             context_recall,
             faithfulness,
         )
-        from app.embeddings.providers.factory import get_embedding_provider
+        from app.embeddings import bge_m3
         from app.generation.context import ContextBuilder
         from app.generation.generator import LLMGenerator
-        from app.reranking.providers.factory import get_reranker
+        from app.reranking import jina
         from app.retrieval.hybrid import HybridRetriever
 
         run.status = EvaluationRunStatus.RUNNING
         await session.commit()
 
         retriever = HybridRetriever()
-        reranker = get_reranker()
         ctx_builder = ContextBuilder(
             max_context_tokens=rag_config.generation.max_context_tokens
         )
         generator = LLMGenerator()
-        embedder = get_embedding_provider()
 
         ragas_data: list[dict[str, Any]] = []
         per_question: list[dict[str, Any]] = []
@@ -71,7 +69,11 @@ class RAGASRunner:
         try:
             for q in questions:
                 try:
-                    query_vec = await embedder.embed_query(q.question)
+                    query_vec = await bge_m3.embed_query(
+                        q.question,
+                        model_name=rag_config.embedding.model,
+                        device=rag_config.embedding.device,
+                    )
                     candidates = await retriever.retrieve(
                         query=q.question,
                         query_vector=query_vec,
@@ -81,8 +83,12 @@ class RAGASRunner:
                     )
 
                     if rag_config.reranking.enabled and candidates:
-                        reranked = await reranker.rerank(
-                            q.question, candidates, top_k=rag_config.reranking.top_k
+                        reranked = await jina.rerank(
+                            query=q.question,
+                            chunks=candidates,
+                            top_k=rag_config.reranking.top_k,
+                            model_name=rag_config.reranking.model,
+                            device=rag_config.reranking.device,
                         )
                     else:
                         reranked = candidates[: rag_config.reranking.top_k]

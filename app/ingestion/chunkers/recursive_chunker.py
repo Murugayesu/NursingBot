@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.ingestion.chunkers.base import BaseChunker, ChunkResult
+
+@dataclass
+class ChunkResult:
+    text: str
+    chunk_index: int
+    token_count: int = 0
+    metadata: dict = field(default_factory=dict)
 
 
 def _count_tokens(text: str) -> int:
@@ -10,13 +18,8 @@ def _count_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-class RecursiveChunker(BaseChunker):
-    """
-    Recursively splits on paragraph → sentence → word boundaries.
-    Uses LangChain's RecursiveCharacterTextSplitter under the hood.
-    """
-
-    strategy_name = "recursive"
+class RecursiveChunker:
+    """Recursively splits on paragraph → sentence → word boundaries."""
 
     def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100) -> None:
         self._splitter = RecursiveCharacterTextSplitter(

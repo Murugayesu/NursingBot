@@ -1,32 +1,22 @@
 from __future__ import annotations
 
-from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class ChunkingStrategy(str, Enum):
-    recursive = "recursive"
-    markdown = "markdown"
-    sentence = "sentence"
-
-
-class FusionStrategy(str, Enum):
+class FusionStrategy(str):
     rrf = "rrf"
 
 
 class ChunkingConfig(BaseModel):
-    strategy: ChunkingStrategy = ChunkingStrategy.recursive
     chunk_size: int = 800
     chunk_overlap: int = 100
 
 
 class EmbeddingConfig(BaseModel):
-    provider: str = "bge_m3"
     model: str = "BAAI/bge-m3"
     device: str = "cpu"
-    batch_size: int = 32
 
 
 class RetrievalConfig(BaseModel):
@@ -34,19 +24,17 @@ class RetrievalConfig(BaseModel):
     sparse: bool = True
     dense_top_k: int = 20
     sparse_top_k: int = 20
-    fusion: FusionStrategy = FusionStrategy.rrf
+    # Fusion is always RRF in V1
 
 
 class RerankingConfig(BaseModel):
     enabled: bool = True
-    provider: str = "jina"
     model: str = "jinaai/jina-reranker-v2-base-multilingual"
     device: str = "cpu"
     top_k: int = 5
 
 
 class GenerationConfig(BaseModel):
-    provider: str = "openai"
     model: str = "gpt-4o-mini"
     temperature: float = 0.0
     max_tokens: int = 2048

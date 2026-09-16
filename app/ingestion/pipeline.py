@@ -8,9 +8,10 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.config.rag_config import RAGConfig
-from app.embeddings.providers.factory import get_embedding_provider
-from app.ingestion.chunkers.factory import get_chunker
+from app.config.rag_config import RAGConfig, ChunkingStrategy
+from app.embeddings import bge_m3
+from app.ingestion.chunkers.recursive_chunker import RecursiveChunker
+from app.ingestion.chunkers.markdown_chunker import MarkdownChunker
 from app.ingestion.cleaners.text_cleaner import TextCleaner
 from app.ingestion.loaders.factory import get_loader
 from app.ingestion.parsers.text_parser import TextParser
@@ -117,11 +118,17 @@ class IngestionPipeline:
             # ── Stage 4: Chunk ───────────────────────────────────────────────
             await _set_status(session, document, DocumentStatus.CHUNKING)
             log.info("chunking document")
-            chunker = get_chunker(
-                rag_config.chunking.strategy,
-                chunk_size=rag_config.chunking.chunk_size,
-                chunk_overlap=rag_config.chunking.chunk_overlap,
-            )
+            # Use MarkdownChunker for .md files, RecursiveChunker for everything else
+            if document.mime_type in ("text/markdown", "text/x-markdown"):
+                chunker = MarkdownChunker(
+                    chunk_size=rag_config.chunking.chunk_size,
+                    chunk_overlap=rag_config.chunking.chunk_overlap,
+                )
+            else:
+                chunker = RecursiveChunker(
+                    chunk_size=rag_config.chunking.chunk_size,
+                    chunk_overlap=rag_config.chunking.chunk_overlap,
+                )
             chunk_results = chunker.chunk(
                 cleaned.text,
                 metadata={
@@ -139,13 +146,16 @@ class IngestionPipeline:
             # ── Stage 5: Embed ───────────────────────────────────────────────
             await _set_status(session, document, DocumentStatus.EMBEDDING)
             log.info("embedding chunks", chunk_count=len(chunk_results))
-            embedder = get_embedding_provider()
             texts = [c.text for c in chunk_results]
-            dense_vectors = await embedder.embed_documents(texts)
+            dense_vectors = await bge_m3.embed_documents(
+                texts,
+                model_name=rag_config.embedding.model,
+                device=rag_config.embedding.device,
+            )
 
-            doc_version.embedding_provider = embedder.provider_name
-            doc_version.embedding_model = embedder.model_name
-            doc_version.embedding_dimension = embedder.dimension
+            doc_version.embedding_provider = "bge_m3"
+            doc_version.embedding_model = rag_config.embedding.model
+            doc_version.embedding_dimension = bge_m3.DIMENSION
             await _set_status(session, document, DocumentStatus.EMBEDDED)
 
             # ── Stage 6: Index into Qdrant ───────────────────────────────────

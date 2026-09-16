@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,12 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.db import get_db
 from app.config.rag_config import RAGConfig
-from app.embeddings.providers.factory import get_embedding_provider
+from app.embeddings import bge_m3
 from app.generation.context import ContextBuilder
 from app.generation.generator import LLMGenerator
 from app.models.knowledge_base import KnowledgeBase
 from app.observability.langfuse_tracer import get_tracer
-from app.reranking.providers.factory import get_reranker
+from app.reranking import jina
 from app.retrieval.hybrid import HybridRetriever
 from app.schemas.query import QueryRequest, QueryResponse, SourceResponse
 
@@ -54,8 +52,11 @@ async def query_knowledge_base(
 
         # 1. Embed query
         with tracer.span(trace, "embed_query"):
-            embedder = get_embedding_provider()
-            query_vector = await embedder.embed_query(body.query)
+            query_vector = await bge_m3.embed_query(
+                body.query,
+                model_name=rag_config.embedding.model,
+                device=rag_config.embedding.device,
+            )
 
         # 2. Hybrid retrieval
         with tracer.span(trace, "hybrid_retrieval", input_data=body.query):
@@ -72,11 +73,12 @@ async def query_knowledge_base(
         # 3. Reranking
         if rag_config.reranking.enabled and candidates:
             with tracer.span(trace, "reranking", metadata={"candidates": len(candidates)}):
-                reranker = get_reranker()
-                reranked = await reranker.rerank(
+                reranked = await jina.rerank(
                     query=body.query,
-                    documents=candidates,
+                    chunks=candidates,
                     top_k=body.top_k or rag_config.reranking.top_k,
+                    model_name=rag_config.reranking.model,
+                    device=rag_config.reranking.device,
                 )
         else:
             reranked = candidates[: (body.top_k or rag_config.reranking.top_k)]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
-from app.ingestion.chunkers.base import BaseChunker, ChunkResult
+from app.ingestion.chunkers.recursive_chunker import ChunkResult
 
 
 def _count_tokens(text: str) -> int:
@@ -17,13 +17,8 @@ _HEADERS = [
 ]
 
 
-class MarkdownChunker(BaseChunker):
-    """
-    Splits Markdown by headers first, then recursively splits oversized sections.
-    Preserves header hierarchy in chunk metadata.
-    """
-
-    strategy_name = "markdown"
+class MarkdownChunker:
+    """Splits Markdown by headers first, then recursively splits oversized sections."""
 
     def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100) -> None:
         self._header_splitter = MarkdownHeaderTextSplitter(
