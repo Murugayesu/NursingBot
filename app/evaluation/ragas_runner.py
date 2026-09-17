@@ -4,8 +4,8 @@ import uuid
 from typing import Any
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.rag_config import RAGConfig
 from app.evaluation.metrics import (
@@ -21,13 +21,14 @@ logger = structlog.get_logger(__name__)
 
 class RAGASRunner:
     """
-    Runs RAGAS evaluation over an EvaluationDataset.
+    Runs RAGAS evaluation over an EvaluationDataset using the LangChain pipeline.
 
     For each question:
-    1. Run the full RAG pipeline (retrieval + generation)
-    2. Compute retrieval metrics (Recall@K, MRR, NDCG)
-    3. Compute RAGAS generation metrics (Faithfulness, Answer Relevance, Correctness)
-    4. Store per-question results + aggregate scores in EvaluationRun
+    1. Retrieve via HybridRetriever (LangChain BaseRetriever)
+    2. Rerank via LocalJinaReranker (LangChain BaseDocumentCompressor)
+    3. Generate via LCEL chain (ChatPromptTemplate → ChatOpenAI → StrOutputParser)
+    4. Compute retrieval metrics (Recall@K, MRR, NDCG)
+    5. Compute RAGAS generation metrics (Faithfulness, Answer Relevance, Correctness)
     """
 
     async def run(
@@ -48,20 +49,33 @@ class RAGASRunner:
             context_recall,
             faithfulness,
         )
-        from app.embeddings import bge_m3
-        from app.generation.context import ContextBuilder
-        from app.generation.generator import LLMGenerator
-        from app.reranking import jina
-        from app.retrieval.hybrid import HybridRetriever
+
+        from app.embeddings.lc_embeddings import get_embeddings
+        from app.generation.chain import build_chain, format_docs_for_context
+        from app.reranking.jina import LocalJinaReranker
+        from app.retrieval.retriever import build_retriever
 
         run.status = EvaluationRunStatus.RUNNING
         await session.commit()
 
-        retriever = HybridRetriever()
-        ctx_builder = ContextBuilder(
-            max_context_tokens=rag_config.generation.max_context_tokens
+        embeddings = get_embeddings(
+            model_name=rag_config.embedding.model,
+            device=rag_config.embedding.device,
         )
-        generator = LLMGenerator()
+        retriever = build_retriever(
+            knowledge_base_id=knowledge_base_id,
+            tenant_id=tenant_id,
+            embeddings=embeddings,
+            dense_top_k=rag_config.retrieval.dense_top_k,
+            sparse_top_k=rag_config.retrieval.sparse_top_k,
+            use_sparse=rag_config.retrieval.sparse,
+        )
+        reranker = LocalJinaReranker(
+            model_name=rag_config.reranking.model,
+            device=rag_config.reranking.device,
+            top_n=rag_config.reranking.top_k,
+        )
+        chain = build_chain(rag_config)
 
         ragas_data: list[dict[str, Any]] = []
         per_question: list[dict[str, Any]] = []
@@ -69,60 +83,43 @@ class RAGASRunner:
         try:
             for q in questions:
                 try:
-                    query_vec = await bge_m3.embed_query(
-                        q.question,
-                        model_name=rag_config.embedding.model,
-                        device=rag_config.embedding.device,
-                    )
-                    candidates = await retriever.retrieve(
-                        query=q.question,
-                        query_vector=query_vec,
-                        knowledge_base_id=knowledge_base_id,
-                        tenant_id=tenant_id,
-                        rag_config=rag_config,
-                    )
+                    # Retrieve
+                    candidates = await retriever.ainvoke(q.question)
 
+                    # Rerank
                     if rag_config.reranking.enabled and candidates:
-                        reranked = await jina.rerank(
-                            query=q.question,
-                            chunks=candidates,
-                            top_k=rag_config.reranking.top_k,
-                            model_name=rag_config.reranking.model,
-                            device=rag_config.reranking.device,
-                        )
+                        reranked = await reranker.acompress_documents(candidates, q.question)
                     else:
                         reranked = candidates[: rag_config.reranking.top_k]
 
-                    context_str, sources = ctx_builder.build(reranked)
-                    gen_result = await generator.generate(
-                        query=q.question,
-                        context_str=context_str,
-                        sources=sources,
-                        rag_config=rag_config,
+                    # Format context
+                    context_str, _ = format_docs_for_context(reranked)
+
+                    # Generate
+                    answer = await chain.ainvoke(
+                        {"context": context_str, "question": q.question}
                     )
 
-                    retrieved_ids = [c.point_id for c in candidates]
+                    retrieved_ids = [d.metadata.get("chunk_id", d.page_content[:50]) for d in candidates]
                     relevant_ids = [q.expected_context] if q.expected_context else []
 
                     pq = {
                         "question_id": str(q.id),
                         "question": q.question,
-                        "answer": gen_result.answer,
-                        "contexts": [c.text for c in reranked],
+                        "answer": answer,
+                        "contexts": [d.page_content for d in reranked],
                         "ground_truth": q.ground_truth,
                         "recall_at_k": recall_at_k(retrieved_ids, relevant_ids, k=10),
                         "mrr": mean_reciprocal_rank(retrieved_ids, relevant_ids),
                         "ndcg_at_k": ndcg_at_k(retrieved_ids, relevant_ids, k=10),
                     }
                     per_question.append(pq)
-                    ragas_data.append(
-                        {
-                            "question": q.question,
-                            "answer": gen_result.answer,
-                            "contexts": [c.text for c in reranked],
-                            "ground_truth": q.ground_truth,
-                        }
-                    )
+                    ragas_data.append({
+                        "question": q.question,
+                        "answer": answer,
+                        "contexts": [d.page_content for d in reranked],
+                        "ground_truth": q.ground_truth,
+                    })
                 except Exception as qe:
                     logger.warning("evaluation question failed", error=str(qe), question_id=str(q.id))
 

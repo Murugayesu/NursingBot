@@ -1,3 +1,15 @@
+"""
+Ingestion pipeline — LangChain-native implementation.
+
+Flow per document:
+    Load (LangChain loader)
+    → split_documents (LangChain text splitter)
+    → aadd_documents (LangChain QdrantVectorStore — embeds + indexes)
+    → persist DocumentChunk records in PostgreSQL
+
+PostgreSQL document status machine is preserved unchanged.
+Content-hash deduplication prevents re-indexing unchanged documents.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -5,32 +17,78 @@ import uuid
 from pathlib import Path
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
+from langchain_core.documents import Document
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config.rag_config import RAGConfig, ChunkingStrategy
-from app.embeddings import bge_m3
-from app.ingestion.chunkers.recursive_chunker import RecursiveChunker
-from app.ingestion.chunkers.markdown_chunker import MarkdownChunker
-from app.ingestion.cleaners.text_cleaner import TextCleaner
-from app.ingestion.loaders.factory import get_loader
-from app.ingestion.parsers.text_parser import TextParser
-from app.models.document import Document, DocumentStatus
-from app.models.document_version import DocumentVersion
+from app.config.rag_config import RAGConfig
+from app.embeddings.lc_embeddings import get_embeddings
+from app.ingestion.loaders.lc_loaders import load_document
 from app.models.chunk import DocumentChunk
+from app.models.document import Document as DBDocument, DocumentStatus
+from app.models.document_version import DocumentVersion
+from app.storage.qdrant.collections import ensure_collection
 from app.storage.qdrant.client import get_qdrant_client
-from app.storage.qdrant.indexer import ChunkToIndex, QdrantIndexer
+from app.storage.qdrant.vector_store import get_vector_store
 
 logger = structlog.get_logger(__name__)
 
+_MARKDOWN_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3"), ("####", "h4")]
 
-def _content_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+def _content_hash(docs: list[Document]) -> str:
+    combined = "".join(d.page_content for d in docs)
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+
+
+def _build_splitter(mime_type: str, cfg) -> RecursiveCharacterTextSplitter | MarkdownHeaderTextSplitter:
+    if mime_type in ("text/markdown", "text/x-markdown"):
+        # Two-stage: header split → recursive split handled in _split_docs
+        return None  # signals markdown path
+    return RecursiveCharacterTextSplitter(
+        chunk_size=cfg.chunk_size,
+        chunk_overlap=cfg.chunk_overlap,
+        separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
+    )
+
+
+def _split_docs(
+    docs: list[Document],
+    mime_type: str,
+    cfg,
+    base_metadata: dict,
+) -> list[Document]:
+    """Split documents and attach base_metadata to every chunk."""
+    if mime_type in ("text/markdown", "text/x-markdown"):
+        header_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=_MARKDOWN_HEADERS, strip_headers=False
+        )
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=cfg.chunk_size, chunk_overlap=cfg.chunk_overlap
+        )
+        header_docs = []
+        for doc in docs:
+            header_docs.extend(header_splitter.split_text(doc.page_content))
+        chunks = text_splitter.split_documents(header_docs)
+    else:
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=cfg.chunk_size,
+            chunk_overlap=cfg.chunk_overlap,
+            separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
+        )
+        chunks = splitter.split_documents(docs)
+
+    # Inject base metadata + chunk index into every chunk
+    for i, chunk in enumerate(chunks):
+        chunk.metadata = {**base_metadata, **chunk.metadata, "chunk_index": i}
+
+    return chunks
 
 
 async def _set_status(
     session: AsyncSession,
-    document: Document,
+    document: DBDocument,
     status: DocumentStatus,
     error: str | None = None,
     failed_stage: str | None = None,
@@ -44,21 +102,23 @@ async def _set_status(
 
 class IngestionPipeline:
     """
-    Orchestrates the full ingestion pipeline for a single document:
-    Load → Parse → Clean → Chunk → Embed → Index → Persist
+    Orchestrates the full ingestion pipeline for a single document
+    using LangChain primitives throughout.
 
-    Checkpoints document status in PostgreSQL at each stage.
-    A single bad document raises an exception (caught by the job runner).
+    Stages:
+      1. Load   — LangChain community loader (PyMuPDF, TextLoader, etc.)
+      2. Split  — LangChain RecursiveCharacterTextSplitter / MarkdownHeaderTextSplitter
+      3. Embed + Index — LangChain QdrantVectorStore.aadd_documents()
+      4. Persist — SQLAlchemy DocumentChunk records
+
+    PostgreSQL status checkpoints are maintained at each stage.
+    Hash-based deduplication skips re-indexing unchanged documents.
     """
-
-    def __init__(self) -> None:
-        self._parser = TextParser()
-        self._cleaner = TextCleaner()
 
     async def run(
         self,
         session: AsyncSession,
-        document: Document,
+        document: DBDocument,
         file_path: Path,
         rag_config: RAGConfig,
         knowledge_base_id: uuid.UUID,
@@ -70,146 +130,111 @@ class IngestionPipeline:
             # ── Stage 1: Load ────────────────────────────────────────────────
             await _set_status(session, document, DocumentStatus.EXTRACTING)
             log.info("loading document")
-            loader = get_loader(file_path, document.mime_type)
-            raw = await loader.load(file_path)
+            lc_docs = load_document(file_path, document.mime_type)
 
-            # ── Stage 2: Parse ───────────────────────────────────────────────
-            parsed = self._parser.parse(raw)
-
-            # ── Stage 3: Clean ───────────────────────────────────────────────
-            await _set_status(session, document, DocumentStatus.CLEANING)
-            log.info("cleaning document")
-            cleaned = self._cleaner.clean(parsed)
-
-            # ── Deduplication via content hash ───────────────────────────────
-            content_hash = _content_hash(cleaned.text)
-
-            # Check if this exact version already exists
-            existing_version = await session.scalar(
+            # ── Stage 2: Hash for deduplication ─────────────────────────────
+            content_hash = _content_hash(lc_docs)
+            existing = await session.scalar(
                 select(DocumentVersion).where(
                     DocumentVersion.document_id == document.id,
                     DocumentVersion.content_hash == content_hash,
                 )
             )
-            if existing_version is not None:
-                log.info("document unchanged, skipping re-indexing", hash=content_hash)
+            if existing is not None:
+                log.info("document unchanged, skipping", hash=content_hash)
                 document.status = DocumentStatus.INDEXED
                 await session.commit()
-                return existing_version
+                return existing
 
-            # New version number
             version_number = document.current_version + 1 if document.content_hash else 1
             document.content_hash = content_hash
             document.current_version = version_number
-            await _set_status(session, document, DocumentStatus.CLEANED)
+            raw_text = "\n\n".join(d.page_content for d in lc_docs)
+            await _set_status(session, document, DocumentStatus.CLEANING)
 
-            # Persist version
             doc_version = DocumentVersion(
                 document_id=document.id,
                 version_number=version_number,
                 content_hash=content_hash,
-                raw_text=parsed.text,
-                cleaned_text=cleaned.text,
-                token_count=len(cleaned.text) // 4,
+                raw_text=raw_text,
+                cleaned_text=raw_text,
+                token_count=len(raw_text) // 4,
+                embedding_provider="huggingface",
+                embedding_model=rag_config.embedding.model,
+                embedding_dimension=1024,
             )
             session.add(doc_version)
-            await session.flush()  # get doc_version.id
+            await session.flush()
 
-            # ── Stage 4: Chunk ───────────────────────────────────────────────
+            # ── Stage 3: Split ───────────────────────────────────────────────
             await _set_status(session, document, DocumentStatus.CHUNKING)
-            log.info("chunking document")
-            # Use MarkdownChunker for .md files, RecursiveChunker for everything else
-            if document.mime_type in ("text/markdown", "text/x-markdown"):
-                chunker = MarkdownChunker(
-                    chunk_size=rag_config.chunking.chunk_size,
-                    chunk_overlap=rag_config.chunking.chunk_overlap,
-                )
-            else:
-                chunker = RecursiveChunker(
-                    chunk_size=rag_config.chunking.chunk_size,
-                    chunk_overlap=rag_config.chunking.chunk_overlap,
-                )
-            chunk_results = chunker.chunk(
-                cleaned.text,
-                metadata={
-                    "document_id": str(document.id),
-                    "knowledge_base_id": str(knowledge_base_id),
-                    "tenant_id": tenant_id,
-                    "title": cleaned.title or document.filename,
-                    "source_url": document.source_url,
-                    "category": document.category,
-                    "document_type": document.document_type,
-                },
+            log.info("splitting document")
+            base_metadata = {
+                "document_id": str(document.id),
+                "document_version_id": str(doc_version.id),
+                "knowledge_base_id": str(knowledge_base_id),
+                "tenant_id": tenant_id,
+                "title": document.title or document.filename,
+                "source_url": document.source_url,
+                "category": document.category,
+                "document_type": document.document_type,
+            }
+            chunks: list[Document] = _split_docs(
+                lc_docs, document.mime_type, rag_config.chunking, base_metadata
             )
             await _set_status(session, document, DocumentStatus.CHUNKED)
+            log.info("split complete", chunks=len(chunks))
 
-            # ── Stage 5: Embed ───────────────────────────────────────────────
+            # ── Stage 4: Embed + Index (one call via LangChain) ───────────────
             await _set_status(session, document, DocumentStatus.EMBEDDING)
-            log.info("embedding chunks", chunk_count=len(chunk_results))
-            texts = [c.text for c in chunk_results]
-            dense_vectors = await bge_m3.embed_documents(
-                texts,
+            log.info("embedding and indexing chunks")
+
+            embeddings = get_embeddings(
                 model_name=rag_config.embedding.model,
                 device=rag_config.embedding.device,
             )
+            # Ensure collection exists (with sparse vector support)
+            await ensure_collection(
+                client=get_qdrant_client(),
+                knowledge_base_id=knowledge_base_id,
+                dense_dim=1024,
+            )
+            vs = get_vector_store(knowledge_base_id, embeddings)
 
-            doc_version.embedding_provider = "bge_m3"
-            doc_version.embedding_model = rag_config.embedding.model
-            doc_version.embedding_dimension = bge_m3.DIMENSION
+            # Generate deterministic point IDs
+            point_ids = [
+                str(uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"{document.id}:{version_number}:{c.metadata['chunk_index']}",
+                ))
+                for c in chunks
+            ]
+            # aadd_documents embeds and upserts in one batched call
+            await vs.aadd_documents(chunks, ids=point_ids)
+
             await _set_status(session, document, DocumentStatus.EMBEDDED)
 
-            # ── Stage 6: Index into Qdrant ───────────────────────────────────
+            # ── Stage 5: Persist chunk records ───────────────────────────────
             await _set_status(session, document, DocumentStatus.INDEXING)
-            log.info("indexing into qdrant")
-            qdrant_client = get_qdrant_client()
-            indexer = QdrantIndexer(qdrant_client)
-
-            db_chunks: list[DocumentChunk] = []
-            chunks_to_index: list[ChunkToIndex] = []
-
-            for chunk_result, dense_vec in zip(chunk_results, dense_vectors):
-                point_id = str(uuid.uuid5(
-                    uuid.NAMESPACE_DNS,
-                    f"{document.id}:{version_number}:{chunk_result.chunk_index}",
-                ))
-                payload = {
-                    **chunk_result.metadata,
-                    "document_version_id": str(doc_version.id),
-                    "chunk_index": chunk_result.chunk_index,
-                }
-                db_chunk = DocumentChunk(
+            db_chunks = [
+                DocumentChunk(
                     document_id=document.id,
                     document_version_id=doc_version.id,
                     knowledge_base_id=knowledge_base_id,
-                    chunk_index=chunk_result.chunk_index,
-                    text=chunk_result.text,
-                    token_count=chunk_result.token_count,
-                    qdrant_point_id=point_id,
-                    chunk_metadata=payload,
+                    chunk_index=c.metadata["chunk_index"],
+                    text=c.page_content,
+                    token_count=len(c.page_content) // 4,
+                    qdrant_point_id=pid,
+                    chunk_metadata=c.metadata,
                 )
-                db_chunks.append(db_chunk)
-                chunks_to_index.append(
-                    ChunkToIndex(
-                        point_id=point_id,
-                        text=chunk_result.text,
-                        dense_vector=dense_vec,
-                        payload=payload,
-                    )
-                )
-
-            indexed = await indexer.index_chunks(
-                knowledge_base_id=knowledge_base_id,
-                chunks=chunks_to_index,
-                dense_dim=embedder.dimension,
-            )
-
-            # ── Persist chunks to PostgreSQL ─────────────────────────────────
+                for c, pid in zip(chunks, point_ids)
+            ]
             session.add_all(db_chunks)
             doc_version.chunk_count = len(db_chunks)
             document.status = DocumentStatus.INDEXED
             await session.commit()
 
-            log.info("ingestion complete", chunks=indexed)
+            log.info("ingestion complete", chunks=len(db_chunks))
             return doc_version
 
         except Exception as exc:

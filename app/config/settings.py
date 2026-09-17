@@ -57,14 +57,11 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_max_tokens: int = 2048
 
-    # ── Embeddings ───────────────────────────────────────────────────────────
-    embedding_provider: str = "bge_m3"
+    # ── Embeddings (BGE-M3 via HuggingFaceEmbeddings) ────────────────────────
     embedding_model: str = "BAAI/bge-m3"
     embedding_device: str = "cpu"
-    embedding_batch_size: int = 32
 
-    # ── Reranker ─────────────────────────────────────────────────────────────
-    reranker_provider: str = "jina"
+    # ── Reranker (Jina local via transformers) ────────────────────────────────
     reranker_model: str = "jinaai/jina-reranker-v2-base-multilingual"
     reranker_device: str = "cpu"
 

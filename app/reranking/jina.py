@@ -1,86 +1,106 @@
 """
-Jina Reranker v2 — local model, no API key required.
-Model: jinaai/jina-reranker-v2-base-multilingual
-Loaded via transformers with trust_remote_code=True.
+Local Jina Reranker v2 implemented as a LangChain BaseDocumentCompressor.
 
-Single concrete implementation — no base class, no factory.
+Uses jinaai/jina-reranker-v2-base-multilingual loaded via transformers
+(no API key — runs fully offline).
+
+Plugs directly into any LangChain retrieval chain via compress_documents().
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Optional, Sequence
 
 import structlog
-
-from app.retrieval.filters import RetrievedChunk
+from langchain_core.callbacks import Callbacks
+from langchain_core.documents import Document
+from langchain_core.documents.compressor import BaseDocumentCompressor
+from pydantic import Field
 
 logger = structlog.get_logger(__name__)
 
-_model: Any = None
+_model_cache: dict[str, Any] = {}
 
 
 def _load_model(model_name: str, device: str) -> Any:
-    global _model
-    if _model is None:
+    key = f"{model_name}:{device}"
+    if key not in _model_cache:
         from transformers import AutoModelForSequenceClassification
         logger.info("loading jina reranker", model=model_name, device=device)
-        _model = AutoModelForSequenceClassification.from_pretrained(
+        model = AutoModelForSequenceClassification.from_pretrained(
             model_name,
             torch_dtype="auto",
             trust_remote_code=True,
         )
-        _model.to(device)
-        _model.eval()
-    return _model
+        model.to(device)
+        model.eval()
+        _model_cache[key] = model
+    return _model_cache[key]
 
 
-def _rerank_sync(
+def _score_sync(
     query: str,
     texts: list[str],
-    top_k: int,
     model_name: str,
     device: str,
-) -> list[tuple[int, float]]:
+) -> list[float]:
     import torch
     model = _load_model(model_name, device)
-    pairs = [[query, text] for text in texts]
+    pairs = [[query, t] for t in texts]
     with torch.no_grad():
         scores = model.compute_score(pairs, max_length=1024)
     if isinstance(scores, (int, float)):
-        scores = [scores]
-    ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
-    return ranked[:top_k]
+        scores = [float(scores)]
+    return [float(s) for s in scores]
 
 
-async def rerank(
-    query: str,
-    chunks: list[RetrievedChunk],
-    top_k: int,
-    model_name: str,
-    device: str,
-) -> list[RetrievedChunk]:
-    """Rerank chunks by cross-encoder relevance score."""
-    if not chunks:
-        return []
-    texts = [c.text for c in chunks]
-    loop = asyncio.get_event_loop()
-    ranked = await loop.run_in_executor(
-        None, _rerank_sync, query, texts, top_k, model_name, device
-    )
-    result: list[RetrievedChunk] = []
-    for orig_idx, score in ranked:
-        c = chunks[orig_idx]
-        result.append(RetrievedChunk(
-            point_id=c.point_id,
-            text=c.text,
-            score=float(score),
-            document_id=c.document_id,
-            knowledge_base_id=c.knowledge_base_id,
-            chunk_index=c.chunk_index,
-            title=c.title,
-            source_url=c.source_url,
-            category=c.category,
-            document_type=c.document_type,
-            extra_payload=c.extra_payload,
-        ))
-    return result
+class LocalJinaReranker(BaseDocumentCompressor):
+    """
+    LangChain BaseDocumentCompressor wrapping the local Jina Reranker v2.
+
+    Compatible with any LangChain retrieval pipeline.
+    top_n documents are returned, sorted by reranker score descending.
+    """
+
+    model_name: str = Field(default="jinaai/jina-reranker-v2-base-multilingual")
+    device: str = Field(default="cpu")
+    top_n: int = Field(default=5)
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    def compress_documents(
+        self,
+        documents: Sequence[Document],
+        query: str,
+        callbacks: Optional[Callbacks] = None,
+    ) -> list[Document]:
+        if not documents:
+            return []
+        texts = [d.page_content for d in documents]
+        scores = _score_sync(query, texts, self.model_name, self.device)
+        ranked = sorted(
+            zip(documents, scores), key=lambda x: x[1], reverse=True
+        )
+        result = []
+        for doc, score in ranked[: self.top_n]:
+            # Inject reranker score into metadata for downstream use
+            enriched = Document(
+                page_content=doc.page_content,
+                metadata={**doc.metadata, "reranker_score": score},
+            )
+            result.append(enriched)
+        return result
+
+    async def acompress_documents(
+        self,
+        documents: Sequence[Document],
+        query: str,
+        callbacks: Optional[Callbacks] = None,
+    ) -> list[Document]:
+        """Async wrapper — runs sync reranking in a thread executor."""
+        if not documents:
+            return []
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self.compress_documents, documents, query, callbacks
+        )

@@ -29,36 +29,41 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.1",
 
+    # ── LangChain ecosystem ──────────────────────────────────────────────────
+    "langchain>=1.0.0",
+    "langchain-core>=1.0.0",
+    "langchain-community>=0.3.0",
+    "langchain-openai>=1.0.0",
+    "langchain-huggingface>=0.1.0",
+    "langchain-text-splitters>=0.3.0",
+
     # ── Vector DB ────────────────────────────────────────────────────────────
     "qdrant-client>=1.12.0",
 
-    # ── Embeddings — BGE-M3 (local) ──────────────────────────────────────────
-    "FlagEmbedding>=1.3.0",
+    # ── Embeddings — BGE-M3 (local, via sentence-transformers) ───────────────
+    "sentence-transformers>=3.0.0",
     "torch>=2.5.0",
-    "transformers>=4.46.0",
+    "FlagEmbedding>=1.3.0",       # optional: FlagEmbedding fallback
 
-    # ── Reranker — Jina v2 (local) ───────────────────────────────────────────
+    # ── Reranker — Jina v2 (local via transformers) ──────────────────────────
+    "transformers>=4.46.0",
     "einops>=0.8.0",              # required by jina reranker
 
-    # ── LLM — OpenAI-compatible ──────────────────────────────────────────────
-    "openai>=1.58.0",
+    # ── LLM — OpenAI-compatible (via langchain-openai) ───────────────────────
+    "openai>=1.58.0",             # transitive dep of langchain-openai
 
-    # ── Document loaders ─────────────────────────────────────────────────────
-    "pymupdf>=1.24.0",            # PDF extraction (fitz)
-    "beautifulsoup4>=4.12.0",     # HTML parsing
-    "lxml>=5.3.0",                # HTML/XML parser backend
-    "markdown-it-py>=3.0.0",     # Markdown parsing
-    "chardet>=5.2.0",             # encoding detection
+    # ── Document loaders (used by langchain-community loaders) ───────────────
+    "pymupdf>=1.24.0",            # PyMuPDFLoader
+    "beautifulsoup4>=4.12.0",     # BSHTMLLoader
+    "lxml>=5.3.0",                # HTML parser backend
+    "unstructured>=0.16.0",       # UnstructuredMarkdownLoader
+    "chardet>=5.2.0",             # encoding detection (TextLoader)
 
-    # ── Chunking ─────────────────────────────────────────────────────────────
-    "langchain-text-splitters>=0.3.0",
-    "tiktoken>=0.8.0",            # token counting
-
-    # ── Sparse retrieval (SPLADE via Qdrant built-in) ────────────────────────
-    "fastembed>=0.4.0",           # used to generate sparse SPLADE vectors
+    # ── Sparse retrieval (SPLADE via fastembed) ───────────────────────────────
+    "fastembed>=0.4.0",
 
     # ── Observability ────────────────────────────────────────────────────────
-    "langfuse>=2.55.0",
+    "langfuse>=4.0.0",
 
     # ── Evaluation ───────────────────────────────────────────────────────────
     "ragas>=0.2.0",
@@ -68,8 +73,8 @@ dependencies = [
     "httpx>=0.28.0",
     "anyio>=4.7.0",
     "structlog>=24.4.0",
-    "tenacity>=9.0.0",           # retries
-    "slowapi>=0.1.9",            # rate limiting
+    "tenacity>=9.0.0",
+    "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]

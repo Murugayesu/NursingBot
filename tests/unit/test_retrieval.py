@@ -1,21 +1,14 @@
 from __future__ import annotations
 
 import pytest
+from langchain_core.documents import Document
 
 from app.retrieval.filters import build_qdrant_filter
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.filters import RetrievedChunk
+from app.retrieval.retriever import _rrf_fuse
 
 
-def _chunk(pid: str, score: float = 1.0) -> RetrievedChunk:
-    return RetrievedChunk(
-        point_id=pid,
-        text="sample text",
-        score=score,
-        document_id="doc1",
-        knowledge_base_id="kb1",
-        chunk_index=0,
-    )
+def _doc(page_content: str, score: float = 1.0) -> Document:
+    return Document(page_content=page_content, metadata={"score": score})
 
 
 # ── Filter tests ──────────────────────────────────────────────────────────────
@@ -47,24 +40,22 @@ def test_or_filter():
 # ── RRF fusion tests ──────────────────────────────────────────────────────────
 
 def test_rrf_deduplicates():
-    list1 = [_chunk("a", 0.9), _chunk("b", 0.8)]
-    list2 = [_chunk("a", 0.7), _chunk("c", 0.6)]
-    fused = reciprocal_rank_fusion([list1, list2])
-    ids = [c.point_id for c in fused]
-    assert len(ids) == len(set(ids))  # no duplicates
+    list1 = [_doc("alpha", 0.9), _doc("beta", 0.8)]
+    list2 = [_doc("alpha", 0.7), _doc("gamma", 0.6)]
+    fused = _rrf_fuse([list1, list2])
+    contents = [d.page_content for d in fused]
+    assert len(contents) == len(set(contents))  # no duplicates
 
 
 def test_rrf_boosts_appearing_in_both():
-    list1 = [_chunk("a"), _chunk("b")]
-    list2 = [_chunk("c"), _chunk("a")]
-    fused = reciprocal_rank_fusion([list1, list2])
-    # "a" appears in both lists, should have higher RRF score than "b" and "c"
-    scores = {c.point_id: c.score for c in fused}
-    assert scores["a"] > scores["b"]
-    assert scores["a"] > scores["c"]
+    list1 = [_doc("alpha"), _doc("beta")]
+    list2 = [_doc("gamma"), _doc("alpha")]
+    fused = _rrf_fuse([list1, list2])
+    # "alpha" appears in both — should rank first
+    assert fused[0].page_content == "alpha"
 
 
 def test_rrf_single_list_passthrough():
-    list1 = [_chunk("x"), _chunk("y")]
-    fused = reciprocal_rank_fusion([list1])
-    assert [c.point_id for c in fused] == ["x", "y"]
+    list1 = [_doc("x"), _doc("y")]
+    fused = _rrf_fuse([list1])
+    assert [d.page_content for d in fused] == ["x", "y"]
