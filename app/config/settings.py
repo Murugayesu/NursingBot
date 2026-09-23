@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
 
+    # ── CORS (#6) ─────────────────────────────────────────────────────────────
+    # Comma-separated list of allowed origins, e.g. "https://app.example.com,https://admin.example.com"
+    # Leave empty in development to default to ["*"] (dev only)
+    cors_allowed_origins: str = ""
+
     # ── Retrieval defaults ───────────────────────────────────────────────────
     default_dense_top_k: int = 20
     default_sparse_top_k: int = 20

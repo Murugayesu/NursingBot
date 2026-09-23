@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -23,6 +21,42 @@ from app.schemas.knowledge_base import KnowledgeBaseCreate, KnowledgeBaseRespons
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
+
+# ── Upload safety ─────────────────────────────────────────────────────────────
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
+
+ALLOWED_MIME_TYPES: set[str] = {
+    "application/pdf",
+    "text/plain",
+    "text/markdown",
+    "text/x-markdown",
+    "text/html",
+    "text/htm",
+    "text/csv",
+    "application/csv",
+}
+
+_MIME_TO_EXT: dict[str, str] = {
+    "application/pdf": ".pdf",
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/x-markdown": ".md",
+    "text/html": ".html",
+    "text/htm": ".html",
+    "text/csv": ".csv",
+    "application/csv": ".csv",
+}
+
+
+def _safe_file_path(doc_id: uuid.UUID, mime_type: str) -> Path:
+    """
+    Return a server-controlled path derived only from doc UUID and MIME type.
+    Never uses the client-supplied filename — prevents path traversal.
+    """
+    ext = _MIME_TO_EXT.get(mime_type, ".bin")
+    doc_dir = Path(tempfile.gettempdir()) / "rag_uploads" / str(doc_id)
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    return doc_dir / f"upload{ext}"
 
 
 # ── Knowledge Base CRUD ───────────────────────────────────────────────────────
@@ -82,13 +116,35 @@ async def upload_documents(
 
     documents: list[Document] = []
     for upload in files:
-        filename = upload.filename or "unknown"
+        # ── MIME type allowlist (#16) ─────────────────────────────────────────
+        mime_type = upload.content_type or "application/octet-stream"
+        if mime_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=415,
+                detail=(
+                    f"Unsupported file type '{mime_type}' for file "
+                    f"'{upload.filename}'. Allowed types: {sorted(ALLOWED_MIME_TYPES)}"
+                ),
+            )
+
+        # ── Size cap (#16) ────────────────────────────────────────────────────
         content = await upload.read()
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File '{upload.filename}' exceeds the maximum allowed size "
+                    f"of {MAX_UPLOAD_BYTES // (1024*1024)} MB."
+                ),
+            )
+
+        # Store original name for display only; never used for the on-disk path
+        original_filename = upload.filename or "unknown"
         doc = Document(
             knowledge_base_id=kb_id,
-            filename=filename,
-            original_filename=filename,
-            mime_type=upload.content_type or "application/octet-stream",
+            filename=original_filename,
+            original_filename=original_filename,
+            mime_type=mime_type,
             file_size=len(content),
             status=DocumentStatus.UPLOADED,
             title=title,
@@ -99,16 +155,15 @@ async def upload_documents(
         db.add(doc)
         await db.flush()
 
-        # Save file to a temp directory named by doc ID (persists until ingestion)
-        doc_dir = Path(tempfile.gettempdir()) / "rag_uploads" / str(doc.id)
-        doc_dir.mkdir(parents=True, exist_ok=True)
-        file_path = doc_dir / filename
+        # Safe path: UUID + MIME-derived extension — no client input (#2)
+        file_path = _safe_file_path(doc.id, mime_type)
         file_path.write_bytes(content)
 
         documents.append(doc)
 
     await db.commit()
     return documents
+
 
 
 @router.get("/{kb_id}/documents", response_model=list[DocumentResponse])

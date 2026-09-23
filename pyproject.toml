@@ -21,7 +21,8 @@ dependencies = [
 
     # ── Database ─────────────────────────────────────────────────────────────
     "sqlalchemy[asyncio]>=2.0.36",
-    "asyncpg>=0.30.0",            # async Postgres driver
+    "asyncpg>=0.30.0",            # async Postgres driver (FastAPI)
+    "psycopg2-binary>=2.9.0",     # sync driver for Alembic migrations
     "alembic>=1.14.0",
 
     # ── Config / validation ──────────────────────────────────────────────────

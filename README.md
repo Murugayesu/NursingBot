@@ -19,7 +19,7 @@ Query → Embed → Hybrid Retrieval → RRF → Jina Reranker → Context → L
 
 ---
 
-## Stack
+## Stack 
 
 | Layer | Technology |
 |---|---|
@@ -180,3 +180,14 @@ python scripts/rebuild_qdrant_index.py --kb-id <kb_uuid>
 ## Environment Variables
 
 See [`.env.example`](.env.example) for all variables with descriptions.
+
+---
+
+## Development Workflow
+
+See [`docs/WORKFLOW.md`](docs/WORKFLOW.md) — local dev, migrations, PRs/CI, release and deploy.
+
+## Production Deployment
+
+- [`docs/DATABASE_SETUP.md`](docs/DATABASE_SETUP.md) — PostgreSQL + Qdrant production server setup (sizing, security, pooling, backups, HA).
+- [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) — full production-quality audit with a go-live checklist. **Read this before deploying** — it documents several issues (including a broken Alembic dependency and a file-upload path-traversal bug) that need fixing first.

@@ -14,7 +14,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-ragdb}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-ragdb}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -33,7 +33,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      test: [ "CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -96,10 +96,13 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       API_HOST: 0.0.0.0
       API_PORT: 8000
+    # Dev only: migrate, then run with auto-reload. The image's own CMD is the
+    # production command and does neither.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
-      - ./app:/app/app          # live-reload in dev
+      - ./app:/app/app # live-reload in dev
       - model_cache:/root/.cache # HuggingFace model cache
 
 volumes:

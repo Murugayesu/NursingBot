@@ -15,12 +15,28 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import structlog
 from langchain_core.callbacks import CallbackManagerForRetrieverRun, AsyncCallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from pydantic import Field
 
 from app.retrieval.filters import RetrievedChunk, build_qdrant_filter
+
+logger = structlog.get_logger(__name__)
+
+
+# ── Sparse model cache (#10) ──────────────────────────────────────────────────
+_sparse_model_cache: dict[str, Any] = {}
+
+
+def _get_sparse_model(model_name: str = "prithivida/Splade_PP_en_v1") -> Any:
+    """Return a cached SparseTextEmbedding instance (load-once pattern)."""
+    if model_name not in _sparse_model_cache:
+        from fastembed import SparseTextEmbedding
+        logger.info("loading sparse embedding model", model=model_name)
+        _sparse_model_cache[model_name] = SparseTextEmbedding(model_name=model_name)
+    return _sparse_model_cache[model_name]
 
 
 # ── Sparse retriever (SPLADE via fastembed) ───────────────────────────────────
@@ -34,6 +50,7 @@ class SparseQdrantRetriever(BaseRetriever):
     knowledge_base_id: uuid.UUID
     top_k: int = 20
     filters: dict[str, Any] = Field(default_factory=dict)
+    model_name: str = "prithivida/Splade_PP_en_v1"
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -54,7 +71,8 @@ class SparseQdrantRetriever(BaseRetriever):
             collection_name,
         )
 
-        model = SparseTextEmbedding(model_name="prithivida/Splade_PP_en_v1")
+        # #10: cache sparse model — same pattern as dense embedder and reranker
+        model = _get_sparse_model(self.model_name)
         embedding = list(model.embed([query]))[0]
         sparse_vec = SparseVector(
             indices=embedding.indices.tolist(),

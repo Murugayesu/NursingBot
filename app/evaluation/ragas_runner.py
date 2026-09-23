@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -123,11 +124,12 @@ class RAGASRunner:
                 except Exception as qe:
                     logger.warning("evaluation question failed", error=str(qe), question_id=str(q.id))
 
-            # ── RAGAS metrics ─────────────────────────────────────────────────
+            # ── RAGAS metrics (#11: offload blocking call to thread) ───────────
             ragas_scores: dict[str, float] = {}
             if ragas_data:
                 dataset = Dataset.from_list(ragas_data)
-                result = evaluate(
+                result = await asyncio.to_thread(
+                    evaluate,
                     dataset,
                     metrics=[
                         context_precision,
