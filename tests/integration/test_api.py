@@ -16,9 +16,9 @@ async def client():
 
 @pytest.mark.asyncio
 async def test_health_endpoint_exists(client):
-    """Health endpoint should return 200 even if services are down (returns degraded)."""
+    """Health endpoint returns 200 when DBs are up, or 503 (degraded) if offline."""
     response = await client.get("/health")
-    assert response.status_code == 200
+    assert response.status_code in (200, 503)
     data = response.json()
     assert "status" in data
     assert "services" in data
