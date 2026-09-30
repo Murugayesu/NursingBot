@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import uuid
 
-from langchain_community.vectorstores import Qdrant as LCQdrant
+try:
+    from langchain_community.vectorstores.qdrant import Qdrant as LCQdrant
+except ImportError:
+    from langchain_community.vectorstores import Qdrant as LCQdrant
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from app.storage.qdrant.client import get_qdrant_client, get_sync_qdrant_client
