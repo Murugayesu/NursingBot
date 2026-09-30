@@ -19,6 +19,7 @@ from pathlib import Path
 import structlog
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from qdrant_client.models import NamedSparseVector, PointVectors, SparseVector
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +29,7 @@ from app.ingestion.loaders.lc_loaders import load_document
 from app.models.chunk import DocumentChunk
 from app.models.document import Document as DBDocument, DocumentStatus
 from app.models.document_version import DocumentVersion
-from app.storage.qdrant.collections import ensure_collection
+from app.storage.qdrant.collections import collection_name, ensure_collection
 from app.storage.qdrant.client import get_qdrant_client
 from app.storage.qdrant.vector_store import get_vector_store
 
@@ -209,8 +210,40 @@ class IngestionPipeline:
                 ))
                 for c in chunks
             ]
-            # aadd_documents embeds and upserts in one batched call
+            # aadd_documents embeds and upserts in one batched call (dense only)
             await vs.aadd_documents(chunks, ids=point_ids)
+
+            # ── Sparse vector upsert (SPLADE via fastembed) ───────────────────
+            # LangChain's Qdrant wrapper only writes to the dense named vector.
+            # We compute sparse vectors separately and upsert them onto the same
+            # point IDs so hybrid search finds populated sparse fields.
+            log.info("computing sparse vectors")
+            from fastembed import SparseTextEmbedding
+            from app.storage.qdrant.collections import SPARSE_VECTOR_NAME
+
+            sparse_model = SparseTextEmbedding(model_name="prithivida/Splade_PP_en_v1")
+            texts = [c.page_content for c in chunks]
+            sparse_embeddings = list(sparse_model.embed(texts))
+
+            qdrant_client = get_qdrant_client()
+            coll_name = collection_name(knowledge_base_id)
+            sparse_points = [
+                PointVectors(
+                    id=pid,
+                    vectors={
+                        SPARSE_VECTOR_NAME: SparseVector(
+                            indices=emb.indices.tolist(),
+                            values=emb.values.tolist(),
+                        )
+                    },
+                )
+                for pid, emb in zip(point_ids, sparse_embeddings)
+            ]
+            await qdrant_client.update_vectors(
+                collection_name=coll_name,
+                points=sparse_points,
+            )
+            log.info("sparse vectors upserted", count=len(sparse_points))
 
             await _set_status(session, document, DocumentStatus.EMBEDDED)
 

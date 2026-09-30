@@ -179,6 +179,7 @@ async def list_documents(kb_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 async def _run_ingestion_job(job_id: uuid.UUID, kb_id: uuid.UUID) -> None:
     """Background task: processes all UPLOADED documents in the job."""
     from app.storage.postgres.database import AsyncSessionFactory
+    # _safe_file_path is defined at module level — import not needed here
 
     async with AsyncSessionFactory() as session:
         job = await session.get(IngestionJob, job_id)
@@ -199,7 +200,10 @@ async def _run_ingestion_job(job_id: uuid.UUID, kb_id: uuid.UUID) -> None:
                 job.documents_skipped += 1
                 continue
 
-            file_path = Path(tempfile.gettempdir()) / "rag_uploads" / str(doc.id) / doc.filename
+            # Reconstruct path using the same server-controlled helper used at upload time.
+            # Using doc.filename here would be wrong — it holds the user-supplied display name
+            # (e.g. "my report.pdf") which is never the on-disk name ("upload.pdf").
+            file_path = _safe_file_path(doc.id, doc.mime_type)
             try:
                 version = await pipeline.run(
                     session=session,
