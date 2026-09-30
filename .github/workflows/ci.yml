@@ -43,6 +43,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub runners ship with ~6 GB of tools we never use (Android SDK,
+      # .NET, Haskell, large apt packages). Free them before installing the
+      # ML-heavy dependency tree (torch + transformers alone is ~4 GB).
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.0
+        with:
+          tool-cache: false        # keep the Python/pip cache action uses
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false     # keep so docker-build job is unaffected
+          swap-storage: true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -98,6 +112,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Free ~10 GB of runner tools before the ML-heavy pip install.
+      # Without this, torch + transformers + fastembed exhaust the 14 GB
+      # runner disk and the Qdrant service container fails to pull its image.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.0
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
