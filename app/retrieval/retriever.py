@@ -63,7 +63,7 @@ class SparseQdrantRetriever(BaseRetriever):
         self, query: str, *, run_manager: AsyncCallbackManagerForRetrieverRun
     ) -> list[Document]:
         from fastembed import SparseTextEmbedding
-        from qdrant_client.models import NamedSparseVector, SparseVector
+        from qdrant_client import models
 
         from app.storage.qdrant.client import get_qdrant_client
         from app.storage.qdrant.collections import (
@@ -74,7 +74,7 @@ class SparseQdrantRetriever(BaseRetriever):
         # #10: cache sparse model — same pattern as dense embedder and reranker
         model = _get_sparse_model(self.model_name)
         embedding = list(model.embed([query]))[0]
-        sparse_vec = SparseVector(
+        sparse_vec = models.SparseVector(
             indices=embedding.indices.tolist(),
             values=embedding.values.tolist(),
         )
@@ -83,7 +83,7 @@ class SparseQdrantRetriever(BaseRetriever):
         client = get_qdrant_client()
         hits = await client.search(
             collection_name=collection_name(self.knowledge_base_id),
-            query_vector=NamedSparseVector(name=SPARSE_VECTOR_NAME, vector=sparse_vec),
+            query_vector=models.NamedSparseVector(name=SPARSE_VECTOR_NAME, vector=sparse_vec),
             limit=self.top_k,
             query_filter=qdrant_filter,
             with_payload=True,

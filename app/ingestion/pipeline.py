@@ -18,9 +18,7 @@ from pathlib import Path
 
 import structlog
 from langchain_core.documents import Document
-from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-from qdrant_client.models import NamedSparseVector, PointVectors, SparseVector
-from sqlalchemy import select
+from qdrant_client import models
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.rag_config import RAGConfig
@@ -228,10 +226,10 @@ class IngestionPipeline:
             qdrant_client = get_qdrant_client()
             coll_name = collection_name(knowledge_base_id)
             sparse_points = [
-                PointVectors(
+                models.PointVectors(
                     id=pid,
                     vectors={
-                        SPARSE_VECTOR_NAME: SparseVector(
+                        SPARSE_VECTOR_NAME: models.SparseVector(
                             indices=emb.indices.tolist(),
                             values=emb.values.tolist(),
                         )
