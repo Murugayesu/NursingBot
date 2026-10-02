@@ -43,12 +43,16 @@ class NativeQdrantVectorStore(VectorStore):
         metadata_payload_key: str = METADATA_KEY,
     ):
         self.collection_name = collection_name
-        self.embeddings = embeddings
+        self._embeddings = embeddings
         self.client = client or get_sync_qdrant_client()
         self.async_client = async_client or get_qdrant_client()
         self.vector_name = vector_name
         self.content_payload_key = content_payload_key
         self.metadata_payload_key = metadata_payload_key
+
+    @property
+    def embeddings(self) -> Embeddings:
+        return self._embeddings
 
     async def aadd_documents(
         self,
