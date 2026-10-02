@@ -25,8 +25,9 @@ services:
     container_name: rag_qdrant
     restart: unless-stopped
     environment:
-      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
       QDRANT__LOG_LEVEL: ${QDRANT_LOG_LEVEL:-INFO}
+      # To enable Qdrant authentication, set QDRANT_API_KEY in .env and uncomment below:
+      # QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
     ports:
       - "${QDRANT_HTTP_PORT:-6333}:6333"
       - "${QDRANT_GRPC_PORT:-6334}:6334"

@@ -31,6 +31,7 @@ def get_qdrant_client() -> AsyncQdrantClient:
             port=settings.qdrant_http_port,
             api_key=_clean_api_key(settings.qdrant_api_key),
             prefer_grpc=False,
+            check_compatibility=False,
         )
     return _async_client
 
@@ -45,6 +46,7 @@ def get_sync_qdrant_client() -> QdrantClient:
             port=settings.qdrant_http_port,
             api_key=_clean_api_key(settings.qdrant_api_key),
             prefer_grpc=False,
+            check_compatibility=False,
         )
     return _sync_client
 
