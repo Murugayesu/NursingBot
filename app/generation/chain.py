@@ -112,11 +112,12 @@ def get_llm(model: str, temperature: float, max_tokens: int) -> ChatOpenAI:
     key = f"{model}:{temperature}:{max_tokens}"
     if key not in _llm_cache:
         settings = get_settings()
+        api_key = settings.openai_api_key or "not-needed"
         _llm_cache[key] = ChatOpenAI(
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
-            api_key=settings.openai_api_key,
+            api_key=api_key,
             base_url=settings.openai_base_url or None,
         )
     return _llm_cache[key]
@@ -137,3 +138,4 @@ def build_chain(rag_config: RAGConfig) -> Runnable:
     gen = rag_config.generation
     llm = get_llm(gen.model, gen.temperature, gen.max_tokens)
     return prompt | llm | StrOutputParser()
+

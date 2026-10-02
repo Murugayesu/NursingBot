@@ -121,16 +121,27 @@ class NativeQdrantVectorStore(VectorStore):
         else:
             query_vector = await asyncio.to_thread(self.embeddings.embed_query, query)
 
-        hits = await self.async_client.search(
-            collection_name=self.collection_name,
-            query_vector=models.NamedVector(
-                name=self.vector_name,
-                vector=query_vector,
-            ),
-            limit=k,
-            query_filter=filter,
-            with_payload=True,
-        )
+        if hasattr(self.async_client, "query_points"):
+            response = await self.async_client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                using=self.vector_name,
+                limit=k,
+                query_filter=filter,
+                with_payload=True,
+            )
+            hits = response.points
+        else:
+            hits = await self.async_client.search(
+                collection_name=self.collection_name,
+                query_vector=models.NamedVector(
+                    name=self.vector_name,
+                    vector=query_vector,
+                ),
+                limit=k,
+                query_filter=filter,
+                with_payload=True,
+            )
 
         documents: list[Document] = []
         for hit in hits:

@@ -81,13 +81,24 @@ class SparseQdrantRetriever(BaseRetriever):
 
         qdrant_filter = build_qdrant_filter(self.filters) if self.filters else None
         client = get_qdrant_client()
-        hits = await client.search(
-            collection_name=collection_name(self.knowledge_base_id),
-            query_vector=models.NamedSparseVector(name=SPARSE_VECTOR_NAME, vector=sparse_vec),
-            limit=self.top_k,
-            query_filter=qdrant_filter,
-            with_payload=True,
-        )
+        if hasattr(client, "query_points"):
+            response = await client.query_points(
+                collection_name=collection_name(self.knowledge_base_id),
+                query=sparse_vec,
+                using=SPARSE_VECTOR_NAME,
+                limit=self.top_k,
+                query_filter=qdrant_filter,
+                with_payload=True,
+            )
+            hits = response.points
+        else:
+            hits = await client.search(
+                collection_name=collection_name(self.knowledge_base_id),
+                query_vector=models.NamedSparseVector(name=SPARSE_VECTOR_NAME, vector=sparse_vec),
+                limit=self.top_k,
+                query_filter=qdrant_filter,
+                with_payload=True,
+            )
         docs: list[Document] = []
         for hit in hits:
             payload = hit.payload or {}
