@@ -18,7 +18,9 @@ from pathlib import Path
 
 import structlog
 from langchain_core.documents import Document
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from qdrant_client import models
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.rag_config import RAGConfig
