@@ -2,10 +2,23 @@ from __future__ import annotations
 
 from qdrant_client import AsyncQdrantClient, QdrantClient
 
+import structlog
+
 from app.config.settings import get_settings
+
+logger = structlog.get_logger(__name__)
 
 _async_client: AsyncQdrantClient | None = None
 _sync_client: QdrantClient | None = None
+
+
+def _clean_api_key(key: str | None) -> str | None:
+    if not key:
+        return None
+    key = key.strip()
+    if not key or key.startswith("#"):
+        return None
+    return key
 
 
 def get_qdrant_client() -> AsyncQdrantClient:
@@ -16,7 +29,7 @@ def get_qdrant_client() -> AsyncQdrantClient:
         _async_client = AsyncQdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_http_port,
-            api_key=settings.qdrant_api_key or None,
+            api_key=_clean_api_key(settings.qdrant_api_key),
             prefer_grpc=False,
         )
     return _async_client
@@ -30,7 +43,7 @@ def get_sync_qdrant_client() -> QdrantClient:
         _sync_client = QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_http_port,
-            api_key=settings.qdrant_api_key or None,
+            api_key=_clean_api_key(settings.qdrant_api_key),
             prefer_grpc=False,
         )
     return _sync_client
@@ -52,5 +65,6 @@ async def check_qdrant_health() -> bool:
         client = get_qdrant_client()
         await client.get_collections()
         return True
-    except Exception:
+    except Exception as exc:
+        logger.warning("qdrant health check failed", error=str(exc))
         return False

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     qdrant_http_port: int = 6333
     qdrant_grpc_port: int = 6334
     qdrant_api_key: str | None = None
+
+    @field_validator("qdrant_api_key", mode="before")
+    @classmethod
+    def clean_qdrant_api_key(cls, v: Any) -> str | None:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v or v.startswith("#"):
+                return None
+        return v or None
 
     # ── LLM (OpenAI-compatible) ──────────────────────────────────────────────
     llm_provider: str = "openai"
